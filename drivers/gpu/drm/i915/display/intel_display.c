@@ -3429,9 +3429,6 @@ u32 skl_plane_ctl_crtc(const struct intel_crtc_state *crtc_state)
 	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
 	u32 plane_ctl = 0;
 
-	if (crtc_state->uapi.async_flip)
-		plane_ctl |= PLANE_CTL_ASYNC_FLIP;
-
 	if (INTEL_GEN(dev_priv) >= 10 || IS_GEMINILAKE(dev_priv))
 		return plane_ctl;
 
@@ -4786,41 +4783,72 @@ static void intel_post_plane_update(struct intel_atomic_state *state,
 		icl_wa_scalerclkgating(dev_priv, pipe, false);
 }
 
-static void skl_disable_async_flip_wa(struct intel_atomic_state *state,
-				      struct intel_crtc *crtc,
-				      const struct intel_crtc_state *new_crtc_state)
+static void intel_crtc_enable_flip_done(struct intel_atomic_state *state,
+					struct intel_crtc *crtc)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
+	const struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	u8 update_planes = crtc_state->update_planes;
+	const struct intel_plane_state *plane_state;
 	struct intel_plane *plane;
-	struct intel_plane_state *new_plane_state;
 	int i;
 
-	for_each_new_intel_plane_in_state(state, plane, new_plane_state, i) {
-		u32 update_mask = new_crtc_state->update_planes;
-		u32 plane_ctl, surf_addr;
-		enum plane_id plane_id;
-		unsigned long irqflags;
-		enum pipe pipe;
+	for_each_new_intel_plane_in_state(state, plane, plane_state, i) {
+		if (plane->enable_flip_done &&
+		    plane->pipe == crtc->pipe &&
+		    update_planes & BIT(plane->id))
+			plane->enable_flip_done(plane);
+	}
+}
 
-		if (crtc->pipe != plane->pipe ||
-		    !(update_mask & BIT(plane->id)))
-			continue;
+static void intel_crtc_disable_flip_done(struct intel_atomic_state *state,
+					 struct intel_crtc *crtc)
+{
+	const struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	u8 update_planes = crtc_state->update_planes;
+	const struct intel_plane_state *plane_state;
+	struct intel_plane *plane;
+	int i;
 
-		plane_id = plane->id;
-		pipe = plane->pipe;
+	for_each_new_intel_plane_in_state(state, plane, plane_state, i) {
+		if (plane->disable_flip_done &&
+		    plane->pipe == crtc->pipe &&
+		    update_planes & BIT(plane->id))
+			plane->disable_flip_done(plane);
+	}
+}
 
-		spin_lock_irqsave(&dev_priv->uncore.lock, irqflags);
-		plane_ctl = intel_de_read_fw(dev_priv, PLANE_CTL(pipe, plane_id));
-		surf_addr = intel_de_read_fw(dev_priv, PLANE_SURF(pipe, plane_id));
+static void intel_crtc_async_flip_disable_wa(struct intel_atomic_state *state,
+					     struct intel_crtc *crtc)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	const struct intel_crtc_state *old_crtc_state =
+		intel_atomic_get_old_crtc_state(state, crtc);
+	const struct intel_crtc_state *new_crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	u8 update_planes = new_crtc_state->update_planes;
+	const struct intel_plane_state *old_plane_state;
+	struct intel_plane *plane;
+	bool need_vbl_wait = false;
+	int i;
 
-		plane_ctl &= ~PLANE_CTL_ASYNC_FLIP;
-
-		intel_de_write_fw(dev_priv, PLANE_CTL(pipe, plane_id), plane_ctl);
-		intel_de_write_fw(dev_priv, PLANE_SURF(pipe, plane_id), surf_addr);
-		spin_unlock_irqrestore(&dev_priv->uncore.lock, irqflags);
+	for_each_old_intel_plane_in_state(state, plane, old_plane_state, i) {
+		if (plane->need_async_flip_disable_wa &&
+		    plane->pipe == crtc->pipe &&
+		    update_planes & BIT(plane->id)) {
+			/*
+			 * Apart from the async flip bit we want to
+			 * preserve the old state for the plane.
+			 */
+			plane->async_flip(plane, old_crtc_state,
+					  old_plane_state, false);
+			need_vbl_wait = true;
+		}
 	}
 
-	intel_wait_for_vblank(dev_priv, crtc->pipe);
+	if (need_vbl_wait)
+		intel_wait_for_vblank(i915, crtc->pipe);
 }
 
 static void intel_pre_plane_update(struct intel_atomic_state *state,
@@ -4913,10 +4941,8 @@ static void intel_pre_plane_update(struct intel_atomic_state *state,
 	 * WA for platforms where async address update enable bit
 	 * is double buffered and only latched at start of vblank.
 	 */
-	if (old_crtc_state->uapi.async_flip &&
-	    !new_crtc_state->uapi.async_flip &&
-	    IS_GEN_RANGE(dev_priv, 9, 10))
-		skl_disable_async_flip_wa(state, crtc, new_crtc_state);
+	if (old_crtc_state->uapi.async_flip && !new_crtc_state->uapi.async_flip)
+		intel_crtc_async_flip_disable_wa(state, crtc);
 }
 
 static void intel_crtc_disable_planes(struct intel_atomic_state *state,
@@ -12210,7 +12236,7 @@ static void kill_bigjoiner_slave(struct intel_atomic_state *state,
  * Async flip can only change the plane surface address, so anything else
  * changing is rejected from the intel_atomic_check_async() function.
  * Once this check is cleared, flip done interrupt is enabled using
- * the skl_enable_flip_done() function.
+ * the intel_crtc_enable_flip_done() function.
  *
  * As soon as the surface address register is written, flip done interrupt is
  * generated and the requested events are sent to the usersapce in the interrupt
@@ -12254,7 +12280,7 @@ static int intel_atomic_check_async(struct intel_atomic_state *state)
 		 * this(vlv/chv and icl+) should be added when async flip is
 		 * enabled in the atomic IOCTL path.
 		 */
-		if (plane->id != PLANE_PRIMARY)
+		if (!plane->async_flip)
 			return -EINVAL;
 
 		/*
@@ -13155,7 +13181,7 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
 
 	for_each_new_intel_crtc_in_state(state, crtc, new_crtc_state, i) {
 		if (new_crtc_state->uapi.async_flip)
-			skl_enable_flip_done(crtc);
+			intel_crtc_enable_flip_done(state, crtc);
 	}
 
 	/* Now enable the clocks, plane, pipe, and connectors that we set up. */
@@ -13180,7 +13206,7 @@ static void intel_atomic_commit_tail(struct intel_atomic_state *state)
 
 	for_each_new_intel_crtc_in_state(state, crtc, new_crtc_state, i) {
 		if (new_crtc_state->uapi.async_flip)
-			skl_disable_flip_done(crtc);
+			intel_crtc_disable_flip_done(state, crtc);
 
 		if (new_crtc_state->hw.active &&
 		    !intel_crtc_needs_modeset(new_crtc_state) &&

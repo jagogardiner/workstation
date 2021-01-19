@@ -162,8 +162,7 @@ static void intel_dp_set_sink_rates(struct intel_dp *intel_dp)
 	int i, max_rate;
 	int max_lttpr_rate;
 
-	if (drm_dp_has_quirk(&intel_dp->desc, 0,
-			     DP_DPCD_QUIRK_CAN_DO_MAX_LINK_RATE_3_24_GBPS)) {
+	if (drm_dp_has_quirk(&intel_dp->desc, DP_DPCD_QUIRK_CAN_DO_MAX_LINK_RATE_3_24_GBPS)) {
 		/* Needed, e.g., for Apple MBP 2017, 15 inch eDP Retina panel */
 		static const int quirk_rates[] = { 162000, 270000, 324000 };
 
@@ -2435,8 +2434,7 @@ intel_dp_compute_config(struct intel_encoder *encoder,
 	struct intel_connector *intel_connector = intel_dp->attached_connector;
 	struct intel_digital_connector_state *intel_conn_state =
 		to_intel_digital_connector_state(conn_state);
-	bool constant_n = drm_dp_has_quirk(&intel_dp->desc, 0,
-					   DP_DPCD_QUIRK_CONSTANT_N);
+	bool constant_n = drm_dp_has_quirk(&intel_dp->desc, DP_DPCD_QUIRK_CONSTANT_N);
 	int ret = 0, output_bpp;
 
 	if (HAS_PCH_SPLIT(dev_priv) && !HAS_DDI(dev_priv) && port != PORT_A)
@@ -4037,18 +4035,35 @@ ivb_cpu_edp_set_signal_levels(struct intel_dp *intel_dp,
 	intel_de_posting_read(dev_priv, intel_dp->output_reg);
 }
 
+static char dp_training_pattern_name(u8 train_pat)
+{
+	switch (train_pat) {
+	case DP_TRAINING_PATTERN_1:
+	case DP_TRAINING_PATTERN_2:
+	case DP_TRAINING_PATTERN_3:
+		return '0' + train_pat;
+	case DP_TRAINING_PATTERN_4:
+		return '4';
+	default:
+		MISSING_CASE(train_pat);
+		return '?';
+	}
+}
+
 void
 intel_dp_program_link_training_pattern(struct intel_dp *intel_dp,
 				       const struct intel_crtc_state *crtc_state,
 				       u8 dp_train_pat)
 {
-	struct drm_i915_private *dev_priv = dp_to_i915(intel_dp);
+	struct intel_encoder *encoder = &dp_to_dig_port(intel_dp)->base;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
+	u8 train_pat = intel_dp_training_pattern_symbol(dp_train_pat);
 
-	if ((intel_dp_training_pattern_symbol(dp_train_pat)) !=
-	    DP_TRAINING_PATTERN_DISABLE)
+	if (train_pat != DP_TRAINING_PATTERN_DISABLE)
 		drm_dbg_kms(&dev_priv->drm,
-			    "Using DP training pattern TPS%d\n",
-			    intel_dp_training_pattern_symbol(dp_train_pat));
+			    "[ENCODER:%d:%s] Using DP training pattern TPS%c\n",
+			    encoder->base.base.id, encoder->base.name,
+			    dp_training_pattern_name(train_pat));
 
 	intel_dp->set_link_train(intel_dp, crtc_state, dp_train_pat);
 }
@@ -5544,7 +5559,7 @@ static int intel_dp_do_phy_test(struct intel_encoder *encoder,
 	return 0;
 }
 
-static void intel_dp_phy_test(struct intel_encoder *encoder)
+void intel_dp_phy_test(struct intel_encoder *encoder)
 {
 	struct drm_modeset_acquire_ctx ctx;
 	int ret;
@@ -6031,7 +6046,6 @@ intel_dp_set_edid(struct intel_dp *intel_dp)
 	}
 
 	drm_dp_cec_set_edid(&intel_dp->aux, edid);
-	intel_dp->edid_quirks = drm_dp_get_edid_quirks(edid);
 }
 
 static void
@@ -6045,7 +6059,6 @@ intel_dp_unset_edid(struct intel_dp *intel_dp)
 
 	intel_dp->has_hdmi_sink = false;
 	intel_dp->has_audio = false;
-	intel_dp->edid_quirks = 0;
 
 	intel_dp->dfp.max_bpc = 0;
 	intel_dp->dfp.max_dotclock = 0;
@@ -7099,7 +7112,6 @@ static bool intel_edp_init_connector(struct intel_dp *intel_dp,
 	if (edid) {
 		if (drm_add_edid_modes(connector, edid)) {
 			drm_connector_update_edid_property(connector, edid);
-			intel_dp->edid_quirks = drm_dp_get_edid_quirks(edid);
 		} else {
 			kfree(edid);
 			edid = ERR_PTR(-EINVAL);

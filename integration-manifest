@@ -14,10 +14,10 @@ drm-intel drm-intel-next-fixes 046f70d31ddb2069941aec54966fec5b7fbc7b7b
 	drm/i915/tgl: Fix REVID macros for TGL to fetch correct stepping
 drm-amd drm-amd-next-fixes 2bd6bf03f4c1c59381d62c61d03f6cc3fe71f66e
 	Linux 4.14-rc1
-drm-misc drm-misc-next 6dd6b7643e723b4779e59c8ad97bd5db6ff3bb12
-	drm/vmwgfx: Remove reference to struct drm_device.pdev
-drm-intel drm-intel-next 0aa5c3835c8ad34034d53a71ab047e5e614e704e
-	drm/i915: support two CSC module on gen11 and later
+drm-misc drm-misc-next d14413946f42acaf706c3c440ec2c72125a20b86
+	drm/vmwgfx/ttm_object: Reorder header to immediately precede its struct
+drm-intel drm-intel-next 7c553f8b5a7dcf45f7a06da23b45e431aafbbdba
+	drm/dp: Revert "drm/dp: Introduce EDID-based quirks"
 drm-intel drm-intel-next-queued 9d8fddf8579a2a20d0e8a8b631547069a62b953e
 	drm/i915: Disable outputs during unregister
 drm-amd drm-amd-next 754270c7c56292e97d0eff924a5d5d83f92add07
